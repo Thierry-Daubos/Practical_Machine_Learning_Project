@@ -1,0 +1,231 @@
+---
+title: "Human Activity Recognition ML Project"
+author: "Thierry Daubos"
+date: "August 20, 2015"
+output: html_document
+---
+
+# 1. Synopsis
+
+Our goal in this project is to design a Machine Learning algorithm based on the 
+dataset "Weight Lifting Exercises", provided by the research group on 
+[Qualitative Activity Recognition of Weight Lifting Exercises](http://groupware.les.inf.puc-rio.br/har#weight_lifting_exercises) and
+described in the article:   
+Velloso, E.; Bulling, A.; Gellersen, H.; Ugulino, W.; Fuks, H.  
+Qualitative Activity Recognition of Weight Lifting Exercises.  
+Proceedings of 4th International Conference in Cooperation with SIGCHI (Augmented Human '13).  
+Stuttgart, Germany: ACM SIGCHI, 2013.
+
+The idea is to a use collection of sensors data recorded from the Arm, Forearm, 
+Belt and Dumbbell in order to predict "how well" Unilateral Dumbbell Biceps Curls 
+are being performed by the wearer. 
+
+# 2. Loading the pml dataset and preprocessing
+
+We load the training and testing datasets from the appropriate directory.
+There aproximately 41% of NA values in the training data set. These NA values 
+are due to "metavariables" that were introduction posterior to measurements 
+collection by itself.
+```{r Loading, echo=FALSE}
+setwd("J:/R/R MOOC")
+
+pml_training = read.csv("./data/pml-training.csv",
+                        header = TRUE, sep = ",")
+
+pml_testing  = read.csv("./data/pml-testing.csv",
+                        header = TRUE, sep = ",")
+
+sum(is.na(pml_training)) / (length(names(pml_training))*nrow(pml_training))
+
+```
+
+## Filtering the original dataset variables
+
+We define the set of variables below that are unrelated to the outcome we want 
+to predict.
+```{r RemovingNames, echo=TRUE}
+### Removing variables unrelated to actual measurements 
+unused_variables <- c("cvtd_timestamp",
+                      "new_window",
+                      "num_window", 
+                      "raw_timestamp_part_1", 
+                      "raw_timestamp_part_2",
+                      "user_name",
+                      "X" )
+```
+Those variables are linked to the experimental settings (participant names, time
+stamps, rows indexing, ect.) and would not be found in a different recording session.
+There are irrelevant as far as our "classe"" outcome prediction is concerned and
+filtered out from both the train and test sets.
+
+In Fig 1. plot in the Appendix, which display the histograme of the number of NA
+values present for each variables in the training set, is appears that there 
+are two types of variables:
+* Variables with no NAs that come from the sensors themselves
+* variables with over 97% of NA values
+The later are clearly quantities infered from the original sensor data (max, min,
+average, sd) over some time window (as explained in the authors article [Qualitative Activity Recognition of Weight Lifting Exercises](http://groupware.les.inf.puc-rio.br/public/papers/2013.Velloso.QAR-WLE.pdf) )
+
+```{r FilterTraining, echo=FALSE}
+# Filtering variables of pml_training with mostly NA's
+train_na_count <- as.data.frame(sapply(pml_training, function(y) sum(length(which(is.na(y))))))
+colnames(train_na_count) <- c("NA.count")
+names1 <- sort(names(pml_training)[which(train_na_count$NA.count != unique(train_na_count$NA.count)[2])])
+names1 <- sort(names1[!(names1 %in% unused_variables)])
+length(names1)
+```
+
+Similarly, we remove from the test set variables that we listed as unrelated and
+variables containing only NA values.
+```{r FilterTesting, echo=FALSE}
+# Filtering variables of pml_testing with only NA's
+test_na_count <- as.data.frame(sapply(pml_testing, function(y) sum(length(which(is.na(y))))))
+colnames(test_na_count) <- c("NA.count")
+names2 <- sort(names(pml_testing)[which(test_na_count$NA.count != nrow(pml_testing))])
+names2 <- sort(names2[!(names2 %in% unused_variables)])
+length(names2)
+```
+
+Finally, we keep only predictors that are common to both the training and test sets.  
+That corresponds to 52 predictors on which we are going to use to build our 
+predictive model.
+```{r FilterFinal, echo=FALSE}
+# Using only variables common to pml_training and pml_test 
+names_final <- sort(names1[names1 %in% names2])
+length(names_final)
+```
+
+# 3. Redefinition of the train and test data sets
+
+From the cleanned up list of variables, we define the two new datasets: 
+```{r DefinitionDatasets, echo=TRUE}
+### Redefine the train and data sets
+data_train <- pml_training[,c("classe", names_final)] 
+data_test  <- pml_testing [,            names_final ] 
+```
+
+Our new training dataset is further split into training and test datasets with 
+a ration of roughly 70% of the data in the training set and 30% in the test set.
+```{r SplittingTrainTest, echo=TRUE}
+library(caret)
+inTrain  <- createDataPartition(y=data_train$classe, p=0.7, list=FALSE)
+training <- data_train[ inTrain,]
+testing  <- data_train[-inTrain,]
+dim(training); dim(testing)
+```
+
+# 4. Design of the machine learning algorithm
+
+For the machine learning algorithm, we use the random forest approach and the
+randomForest package (which is much faster than the train function with method="rf" 
+from the caret package). Random forest algorithms are equally well suited for 
+regression or classification tasks as ours.
+
+The main tuning metaparameter of the algorithm are:  
+* mtry  : the number of predictors sampled for spliting at each node  
+* ntree : number of trees grown by the forest  
+
+For determination of optimal mtry parameter, we use the tuneRF function provided
+in the randomForest package with initial mtry in the range of [1, number_variables].
+From Fig 2. in the Appendix, we can see that the optimum mtry is 8, a value closed
+to the widely used number srqt(number_variables) = 
+`r sqrt(length(names_final))`, which gives an estimated Out-Of-the-Bag error of 
+0.6%.  
+
+The necessary Number of trees to grow can be estimated using the plot function of
+the package which displays the Mean Squared Error as a function of number of trees
+for each classe. From Fig 3. in the Appendix, we evaluate the sufficient number
+of trees around 150.
+
+Here's the final model with it's Confusion Matrix on the training dataset:
+```{r Training, echo=TRUE}
+# Random Forest model using randomForest
+library(randomForest)
+modFit  <- randomForest(classe ~ .,
+                        data  = training,
+                        test  = testing,
+                        mtry  = 8,
+                        ntree = 150,
+                        importance = TRUE,
+                        test  = TRUE
+                        )
+modFit$confusion
+```
+
+Fig. 4 in the Appendix shows the variable importance plot for the 10 most important 
+variables in terms of Mean Decrease in Accuracy and Mean Decrease Gini brought 
+by each variable.
+
+# 4. Out of Sample Error
+
+When applying our predictive model to the test set, we obtain the following 
+confusion matrix:
+```{r Prediction, echo=FALSE}
+#Predicting new values
+pred              <- predict(modFit, newdata = testing)
+testing$predRight <- pred == testing$classe
+
+table(pred, testing$classe)
+```
+
+From which we calculate the Out of Sample Accuracy for the test set:
+```{r PredAccuracy, echo=FALSE}
+# Accuracy of the predictive model
+Out_of_Sample_Accuracy <- sum(testing$predRight)/nrow(testing)
+Out_of_Sample_Accuracy
+```
+
+And the corresponding Out of Sample error:
+```{r PredError, echo=FALSE}
+# Percentage of Out of Sample Error
+Out_of_Sample_Error <- (1 - Out_of_Sample_Accuracy)*100
+Out_of_Sample_Error
+```
+
+# 5. Appendix
+
+## Fig 1. : Histograme of the number of NA values in training set
+
+```{r NAsHist, echo=FALSE}
+training_NA <- as.data.frame(sapply(pml_training, function(y) sum(length(which(is.na(y))))))
+colnames(training_NA) <- c("NA_count")
+library(ggplot2)
+g = ggplot(training_NA, aes(x = NA_count, fill = ..count..))
+g = g + geom_histogram(binwidth = 5000)
+g
+```
+
+## Fig 2. : Tuning of randomForest algorithm for optimal mtry parameter
+```{r MtryTuning, echo=FALSE}
+set.seed(647)
+tuneRF(training[,-1], 
+       training[, 1], 
+       mtryStart  = 1, 
+       ntreeTry   = length(names_final), 
+       stepFactor = 2, 
+       improve    = 0.05,
+       plot       = TRUE, 
+       doBest     = FALSE
+       )
+```
+
+
+## Fig 3. : Tuning the number of trees to grow by randomForest
+```{r NtreeTuning, echo=FALSE}
+set.seed(647)
+NumTrees <- randomForest(classe ~ .,
+                         data  = training,
+                         test  = testing,
+                         mtry  = 8,
+                         ntree = 300,
+                         importance = TRUE,
+                         test  = TRUE
+                        )
+plot(NumTrees, log="y")
+```
+
+## Fig 4. : Vaiable importance plot
+```{r VarImpPlot, echo=FALSE}
+varImpPlot(modFit, n.var = 10)
+```
+
